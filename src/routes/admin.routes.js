@@ -17,6 +17,7 @@ const {
 const {
   verifyPayment,
   rejectPayment,
+  getPaymentByRegistration,
 } = require("../controllers/payment.controller");
 
 const {
@@ -77,6 +78,13 @@ router.patch(
 );
 
 router.get(
+  "/registrations/:id/payment",
+  authenticate,
+  authorizeRoles("SUPER_ADMIN", "FACULTY"),
+  getPaymentByRegistration
+);
+
+router.get(
   "/registrations",
   authenticate,
   authorizeRoles("SUPER_ADMIN", "FACULTY"),
@@ -89,6 +97,8 @@ router.get(
   authorizeRoles("SUPER_ADMIN", "FACULTY"),
   exportRegistrations
 );
+
+
 
 router.get(
   "/registrations/:id",

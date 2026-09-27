@@ -119,9 +119,11 @@ const createRegistration = async (req, res) => {
     // 7. Prevent duplicate registration
     // -------------------------------------------------
 
+    const normalizedCollegeId = collegeId.trim();
+
     const existingParticipant = await Participant.findOne({
       eventId: event._id,
-      collegeId: collegeId.trim(),
+      collegeId: normalizedCollegeId,
     });
 
     if (existingParticipant) {
@@ -158,7 +160,7 @@ const createRegistration = async (req, res) => {
       registrationId,
       eventId: event._id,
       name: name.trim(),
-      collegeId: collegeId.trim(),
+      collegeId: normalizedCollegeId,
       email: email.trim().toLowerCase(),
       phone: phone.trim(),
       department: department.trim(),
@@ -179,15 +181,24 @@ const createRegistration = async (req, res) => {
     // 13. Create registration
     // -------------------------------------------------
 
-    const registration = await Registration.create({
-      registrationId,
-      eventId: event._id,
-      registrationType: "INDIVIDUAL",
-      participantIds: [participant._id],
-      teamId: null,
-      paymentStatus,
-      status: "ACTIVE",
-    });
+    let registration;
+
+    try {
+      registration = await Registration.create({
+        registrationId,
+        eventId: event._id,
+        registrationType: "INDIVIDUAL",
+        participantIds: [participant._id],
+        teamId: null,
+        paymentStatus,
+        status: "ACTIVE",
+      });
+    } catch (registrationError) {
+      // If registration creation fails, remove the participant
+      await Participant.findByIdAndDelete(participant._id);
+
+      throw registrationError;
+    }
 
     // -------------------------------------------------
     // 14. Increase registration count
@@ -262,12 +273,14 @@ const getRegistration = async (req, res) => {
       });
     }
 
+    const normalizedRegistrationId = registrationId.trim().toUpperCase();
+
     // -------------------------------------------------
-    // Find registration
+    // Find registration using CUSTOM registrationId
     // -------------------------------------------------
 
     const registration = await Registration.findOne({
-      registrationId: registrationId.trim().toUpperCase(),
+      registrationId: normalizedRegistrationId,
     })
       .populate(
         "eventId",
@@ -276,7 +289,8 @@ const getRegistration = async (req, res) => {
       .populate(
         "participantIds",
         "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
-      );
+      )
+      .populate("teamId", "teamId name leaderId status");
 
     if (!registration) {
       return res.status(404).json({
@@ -299,6 +313,8 @@ const getRegistration = async (req, res) => {
         status: registration.status,
 
         event: registration.eventId,
+
+        team: registration.teamId || null,
 
         participants: registration.participantIds,
       },
@@ -331,17 +347,30 @@ const getRegistrations = async (req, res) => {
 
     const registrationQuery = {};
 
+    // -------------------------------------------------
     // Filter by event
+    // -------------------------------------------------
+
     if (eventId) {
       registrationQuery.eventId = eventId;
     }
 
+    // -------------------------------------------------
     // Filter by payment status
+    // -------------------------------------------------
+
     if (paymentStatus) {
       registrationQuery.paymentStatus = paymentStatus;
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const pageNumber = Math.max(Number(page) || 1, 1);
+    const limitNumber = Math.min(Math.max(Number(limit) || 20, 1), 100);
+
+    const skip = (pageNumber - 1) * limitNumber;
+
+    // -------------------------------------------------
+    // Get registrations
+    // -------------------------------------------------
 
     const registrations = await Registration.find(registrationQuery)
       .populate(
@@ -352,16 +381,23 @@ const getRegistrations = async (req, res) => {
         "participantIds",
         "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
       )
+      .populate(
+        "teamId",
+        "teamId name leaderId status"
+      )
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(Number(limit))
+      .limit(limitNumber)
       .lean();
 
-    // Search participant information
+    // -------------------------------------------------
+    // Search
+    // -------------------------------------------------
+
     let filteredRegistrations = registrations;
 
     if (search) {
-      const searchText = search.toLowerCase();
+      const searchText = search.toLowerCase().trim();
 
       filteredRegistrations = registrations.filter((registration) => {
         const registrationMatch =
@@ -369,18 +405,40 @@ const getRegistrations = async (req, res) => {
             ?.toLowerCase()
             .includes(searchText);
 
-        const participantMatch = registration.participantIds?.some(
-          (participant) =>
-            participant.name?.toLowerCase().includes(searchText) ||
-            participant.collegeId?.toLowerCase().includes(searchText) ||
-            participant.email?.toLowerCase().includes(searchText)
-        );
+        const participantMatch =
+          registration.participantIds?.some(
+            (participant) =>
+              participant.name
+                ?.toLowerCase()
+                .includes(searchText) ||
+              participant.collegeId
+                ?.toLowerCase()
+                .includes(searchText) ||
+              participant.email
+                ?.toLowerCase()
+                .includes(searchText)
+          );
 
-        return registrationMatch || participantMatch;
+        const teamMatch =
+          registration.teamId?.teamId
+            ?.toLowerCase()
+            .includes(searchText) ||
+          registration.teamId?.name
+            ?.toLowerCase()
+            .includes(searchText);
+
+        return (
+          registrationMatch ||
+          participantMatch ||
+          teamMatch
+        );
       });
     }
 
+    // -------------------------------------------------
     // Attendance filter
+    // -------------------------------------------------
+
     if (attendanceStatus) {
       filteredRegistrations = filteredRegistrations.filter(
         (registration) =>
@@ -391,12 +449,22 @@ const getRegistrations = async (req, res) => {
       );
     }
 
-    const total = await Registration.countDocuments(registrationQuery);
+    // -------------------------------------------------
+    // Total
+    // -------------------------------------------------
+
+    const total = await Registration.countDocuments(
+      registrationQuery
+    );
+
+    // -------------------------------------------------
+    // Response
+    // -------------------------------------------------
 
     return res.status(200).json({
       success: true,
-      page: Number(page),
-      limit: Number(limit),
+      page: pageNumber,
+      limit: limitNumber,
       total,
       count: filteredRegistrations.length,
       registrations: filteredRegistrations,
@@ -420,7 +488,36 @@ const getRegistrationById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const registration = await Registration.findById(id)
+    // -------------------------------------------------
+    // Validate ID
+    // -------------------------------------------------
+
+    if (!id || !id.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Registration ID is required",
+      });
+    }
+
+    // -------------------------------------------------
+    // IMPORTANT:
+    // The API receives REG-XXXXXXXXXXXX.
+    //
+    // DO NOT use:
+    // Registration.findById(id)
+    //
+    // because findById() searches MongoDB _id,
+    // which is an ObjectId.
+    //
+    // We use findOne() against our custom
+    // registrationId field.
+    // -------------------------------------------------
+
+    const registrationId = id.trim().toUpperCase();
+
+    const registration = await Registration.findOne({
+      registrationId,
+    })
       .populate(
         "eventId",
         "title slug category description imageUrl date startTime endTime venue fee registrationStart registrationEnd"
@@ -429,7 +526,14 @@ const getRegistrationById = async (req, res) => {
         "participantIds",
         "registrationId name collegeId email phone department year customFields attendanceStatus checkedInAt checkedInBy"
       )
-      .populate("teamId", "teamId name leaderId status");
+      .populate(
+        "teamId",
+        "teamId name leaderId status"
+      );
+
+    // -------------------------------------------------
+    // Not found
+    // -------------------------------------------------
 
     if (!registration) {
       return res.status(404).json({
@@ -437,6 +541,10 @@ const getRegistrationById = async (req, res) => {
         message: "Registration not found",
       });
     }
+
+    // -------------------------------------------------
+    // Response
+    // -------------------------------------------------
 
     return res.status(200).json({
       success: true,
@@ -452,6 +560,11 @@ const getRegistrationById = async (req, res) => {
   }
 };
 
+// =====================================================
+// ADMIN: EXPORT REGISTRATIONS
+// GET /api/admin/registrations/export
+// =====================================================
+
 const exportRegistrations = async (req, res) => {
   try {
     const {
@@ -463,13 +576,25 @@ const exportRegistrations = async (req, res) => {
 
     const query = {};
 
+    // -------------------------------------------------
+    // Event filter
+    // -------------------------------------------------
+
     if (eventId) {
       query.eventId = eventId;
     }
 
+    // -------------------------------------------------
+    // Payment filter
+    // -------------------------------------------------
+
     if (paymentStatus) {
       query.paymentStatus = paymentStatus;
     }
+
+    // -------------------------------------------------
+    // Get registrations
+    // -------------------------------------------------
 
     const registrations = await Registration.find(query)
       .populate(
@@ -480,68 +605,123 @@ const exportRegistrations = async (req, res) => {
         "participantIds",
         "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
       )
+      .populate(
+        "teamId",
+        "teamId name leaderId status"
+      )
       .sort({ createdAt: -1 });
 
     let filteredRegistrations = registrations;
 
+    // -------------------------------------------------
+    // Search
+    // -------------------------------------------------
+
     if (search) {
       const searchText = search.toLowerCase().trim();
 
-      filteredRegistrations = registrations.filter((registration) => {
-        const registrationMatch =
-          registration.registrationId
-            ?.toLowerCase()
-            .includes(searchText);
+      filteredRegistrations = registrations.filter(
+        (registration) => {
+          const registrationMatch =
+            registration.registrationId
+              ?.toLowerCase()
+              .includes(searchText);
 
-        const participantMatch =
-          registration.participantIds?.some((participant) =>
-            [
-              participant.name,
-              participant.collegeId,
-              participant.email,
-              participant.phone,
-            ]
-              .filter(Boolean)
-              .some((value) =>
-                String(value).toLowerCase().includes(searchText)
-              )
+          const participantMatch =
+            registration.participantIds?.some(
+              (participant) =>
+                [
+                  participant.name,
+                  participant.collegeId,
+                  participant.email,
+                  participant.phone,
+                ]
+                  .filter(Boolean)
+                  .some((value) =>
+                    String(value)
+                      .toLowerCase()
+                      .includes(searchText)
+                  )
+            );
+
+          const teamMatch =
+            registration.teamId?.teamId
+              ?.toLowerCase()
+              .includes(searchText) ||
+            registration.teamId?.name
+              ?.toLowerCase()
+              .includes(searchText);
+
+          return (
+            registrationMatch ||
+            participantMatch ||
+            teamMatch
           );
-
-        return registrationMatch || participantMatch;
-      });
-    }
-
-    if (attendanceStatus) {
-      filteredRegistrations = filteredRegistrations.filter((registration) =>
-        registration.participantIds?.some(
-          (participant) =>
-            participant.attendanceStatus === attendanceStatus
-        )
+        }
       );
     }
 
-    const registrationIds = filteredRegistrations.map(
-      (registration) => registration._id
-    );
+    // -------------------------------------------------
+    // Attendance filter
+    // -------------------------------------------------
+
+    if (attendanceStatus) {
+      filteredRegistrations =
+        filteredRegistrations.filter(
+          (registration) =>
+            registration.participantIds?.some(
+              (participant) =>
+                participant.attendanceStatus ===
+                attendanceStatus
+            )
+        );
+    }
+
+    // -------------------------------------------------
+    // Get payments
+    // -------------------------------------------------
+
+    const registrationIds =
+      filteredRegistrations.map(
+        (registration) => registration._id
+      );
 
     const payments = await Payment.find({
-      registrationId: { $in: registrationIds },
-    }).sort({ createdAt: -1 });
+      registrationId: {
+        $in: registrationIds,
+      },
+    }).sort({
+      createdAt: -1,
+    });
+
+    // -------------------------------------------------
+    // Map latest payment per registration
+    // -------------------------------------------------
 
     const paymentsMap = new Map();
 
     for (const payment of payments) {
-      const key = payment.registrationId.toString();
+      const key =
+        payment.registrationId.toString();
 
       if (!paymentsMap.has(key)) {
         paymentsMap.set(key, payment);
       }
     }
 
-    const buffer = await generateRegistrationExcel(
-      filteredRegistrations,
-      paymentsMap
-    );
+    // -------------------------------------------------
+    // Generate Excel
+    // -------------------------------------------------
+
+    const buffer =
+      await generateRegistrationExcel(
+        filteredRegistrations,
+        paymentsMap
+      );
+
+    // -------------------------------------------------
+    // Response headers
+    // -------------------------------------------------
 
     res.setHeader(
       "Content-Type",
@@ -555,7 +735,10 @@ const exportRegistrations = async (req, res) => {
 
     return res.send(buffer);
   } catch (error) {
-    console.error("Export registrations error:", error);
+    console.error(
+      "Export registrations error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -564,6 +747,9 @@ const exportRegistrations = async (req, res) => {
   }
 };
 
+// =====================================================
+// EXPORTS
+// =====================================================
 
 module.exports = {
   createRegistration,
