@@ -1,0 +1,24 @@
+const express = require("express");
+
+const {
+  submitPayment,
+  submitTeamPayment,
+} = require("../controllers/payment.controller");
+
+const upload = require("../middleware/upload");
+
+const router = express.Router();
+
+router.post(
+  "/:registrationId",
+  upload.single("paymentScreenshot"),
+  submitPayment
+);
+
+router.post(
+  "/team/:teamId",
+  upload.single("paymentScreenshot"),
+  submitTeamPayment
+);
+
+module.exports = router;
