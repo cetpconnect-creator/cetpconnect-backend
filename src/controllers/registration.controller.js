@@ -4,9 +4,47 @@ const Event = require("../models/Event");
 const Participant = require("../models/Participant");
 const Registration = require("../models/Registration");
 const Payment = require("../models/Payment");
+const User = require("../models/User");
 
 const { generateParticipantQR } = require("../services/qr.service");
 const { generateRegistrationExcel } = require("../services/excel.service");
+
+// =====================================================
+// HELPER
+// GET EVENTS USER IS ALLOWED TO ACCESS
+// =====================================================
+
+const getAccessibleEventIds = async (req) => {
+  const role = req.user?.role;
+  const userId = req.user?.userId;
+
+  // SUPER_ADMIN can access everything
+  if (role === "SUPER_ADMIN") {
+    return null;
+  }
+
+  const user = await User.findById(userId)
+    .select("assignedEvents isActive role")
+    .lean();
+
+  if (!user) {
+    const error = new Error("User not found");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (!user.isActive) {
+    const error = new Error("User account is inactive");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const assignedEvents = Array.isArray(user.assignedEvents)
+    ? user.assignedEvents
+    : [];
+
+  return assignedEvents;
+};
 
 // =====================================================
 // CREATE INDIVIDUAL REGISTRATION
@@ -26,10 +64,6 @@ const createRegistration = async (req, res) => {
       customFields,
     } = req.body;
 
-    // -------------------------------------------------
-    // 1. Validate required fields
-    // -------------------------------------------------
-
     if (
       !eventId ||
       !name ||
@@ -45,10 +79,6 @@ const createRegistration = async (req, res) => {
       });
     }
 
-    // -------------------------------------------------
-    // 2. Find event
-    // -------------------------------------------------
-
     const event = await Event.findById(eventId);
 
     if (!event) {
@@ -58,20 +88,12 @@ const createRegistration = async (req, res) => {
       });
     }
 
-    // -------------------------------------------------
-    // 3. Event must be published
-    // -------------------------------------------------
-
     if (event.status !== "PUBLISHED") {
       return res.status(400).json({
         success: false,
         message: "Registration is not available for this event",
       });
     }
-
-    // -------------------------------------------------
-    // 4. Make sure event is an individual event
-    // -------------------------------------------------
 
     if (event.registrationType !== "INDIVIDUAL") {
       return res.status(400).json({
@@ -80,10 +102,6 @@ const createRegistration = async (req, res) => {
           "This event uses team registration. Individual registration is not allowed.",
       });
     }
-
-    // -------------------------------------------------
-    // 5. Check registration period
-    // -------------------------------------------------
 
     const now = new Date();
 
@@ -104,20 +122,12 @@ const createRegistration = async (req, res) => {
       });
     }
 
-    // -------------------------------------------------
-    // 6. Check event capacity
-    // -------------------------------------------------
-
     if (event.registrationCount >= event.capacity) {
       return res.status(400).json({
         success: false,
         message: "Event registration capacity is full",
       });
     }
-
-    // -------------------------------------------------
-    // 7. Prevent duplicate registration
-    // -------------------------------------------------
 
     const normalizedCollegeId = collegeId.trim();
 
@@ -133,28 +143,12 @@ const createRegistration = async (req, res) => {
       });
     }
 
-    // -------------------------------------------------
-    // 8. Generate secure registration ID
-    // -------------------------------------------------
-
     const registrationId =
       "REG-" + crypto.randomBytes(6).toString("hex").toUpperCase();
 
-    // -------------------------------------------------
-    // 9. Generate secure QR token
-    // -------------------------------------------------
-
     const qrToken = crypto.randomBytes(32).toString("hex");
 
-    // -------------------------------------------------
-    // 10. Generate QR image
-    // -------------------------------------------------
-
     const qrImage = await generateParticipantQR(qrToken);
-
-    // -------------------------------------------------
-    // 11. Create participant
-    // -------------------------------------------------
 
     const participant = await Participant.create({
       registrationId,
@@ -170,16 +164,8 @@ const createRegistration = async (req, res) => {
       attendanceStatus: "NOT_CHECKED_IN",
     });
 
-    // -------------------------------------------------
-    // 12. Determine initial payment status
-    // -------------------------------------------------
-
     const paymentStatus =
       event.fee > 0 ? "PENDING_PAYMENT" : "PAYMENT_VERIFIED";
-
-    // -------------------------------------------------
-    // 13. Create registration
-    // -------------------------------------------------
 
     let registration;
 
@@ -194,23 +180,13 @@ const createRegistration = async (req, res) => {
         status: "ACTIVE",
       });
     } catch (registrationError) {
-      // If registration creation fails, remove the participant
       await Participant.findByIdAndDelete(participant._id);
-
       throw registrationError;
     }
-
-    // -------------------------------------------------
-    // 14. Increase registration count
-    // -------------------------------------------------
 
     event.registrationCount += 1;
 
     await event.save();
-
-    // -------------------------------------------------
-    // 15. Response
-    // -------------------------------------------------
 
     return res.status(201).json({
       success: true,
@@ -231,14 +207,12 @@ const createRegistration = async (req, res) => {
           year: participant.year,
         },
 
-        // QR image is returned only when registration is created
         qrCode: qrImage,
       },
     });
   } catch (error) {
     console.error("Create registration error:", error);
 
-    // Duplicate key protection
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -254,17 +228,13 @@ const createRegistration = async (req, res) => {
 };
 
 // =====================================================
-// GET REGISTRATION
+// GET PUBLIC REGISTRATION
 // GET /api/registrations/:registrationId
 // =====================================================
 
 const getRegistration = async (req, res) => {
   try {
     const { registrationId } = req.params;
-
-    // -------------------------------------------------
-    // Validate registration ID
-    // -------------------------------------------------
 
     if (!registrationId) {
       return res.status(400).json({
@@ -273,24 +243,43 @@ const getRegistration = async (req, res) => {
       });
     }
 
-    const normalizedRegistrationId = registrationId.trim().toUpperCase();
+    const normalizedRegistrationId =
+      registrationId.trim().toUpperCase();
 
-    // -------------------------------------------------
-    // Find registration using CUSTOM registrationId
-    // -------------------------------------------------
-
-    const registration = await Registration.findOne({
-      registrationId: normalizedRegistrationId,
-    })
-      .populate(
-        "eventId",
-        "title slug category description imageUrl date startTime endTime venue fee registrationStart registrationEnd"
-      )
-      .populate(
-        "participantIds",
-        "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
-      )
-      .populate("teamId", "teamId name leaderId status");
+    const registration =
+      await Registration.findOne({
+        registrationId: normalizedRegistrationId,
+      })
+        .populate(
+          "eventId",
+          [
+            "title",
+            "slug",
+            "category",
+            "description",
+            "imageUrl",
+            "date",
+            "startTime",
+            "endTime",
+            "venue",
+            "fee",
+            "registrationStart",
+            "registrationEnd",
+            "paymentQrUrl",
+            "registrationType",
+            "minTeamSize",
+            "maxTeamSize",
+          ].join(" ")
+        )
+        .populate({
+          path: "participantIds",
+          select:
+            "registrationId name collegeId email phone department year attendanceStatus checkedInAt +qrToken",
+        })
+        .populate(
+          "teamId",
+          "teamId name leaderId status"
+        );
 
     if (!registration) {
       return res.status(404).json({
@@ -299,28 +288,91 @@ const getRegistration = async (req, res) => {
       });
     }
 
-    // -------------------------------------------------
-    // Response
-    // -------------------------------------------------
+    /*
+     * Generate fresh QR image data for every participant.
+     *
+     * qrToken is stored securely in Participant
+     * but is temporarily selected here so we can
+     * regenerate the QR image.
+     */
+    const participants =
+      await Promise.all(
+        registration.participantIds.map(
+          async (participant) => {
+            let qrCode = "";
+
+            if (participant.qrToken) {
+              qrCode =
+                await generateParticipantQR(
+                  participant.qrToken
+                );
+            }
+
+            return {
+              _id: participant._id,
+
+              registrationId:
+                participant.registrationId,
+
+              name: participant.name,
+
+              collegeId:
+                participant.collegeId,
+
+              email:
+                participant.email,
+
+              phone:
+                participant.phone,
+
+              department:
+                participant.department,
+
+              year:
+                participant.year,
+
+              attendanceStatus:
+                participant.attendanceStatus,
+
+              checkedInAt:
+                participant.checkedInAt,
+
+              qrCode,
+            };
+          }
+        )
+      );
 
     return res.status(200).json({
       success: true,
 
       registration: {
-        registrationId: registration.registrationId,
-        registrationType: registration.registrationType,
-        paymentStatus: registration.paymentStatus,
-        status: registration.status,
+        registrationId:
+          registration.registrationId,
 
-        event: registration.eventId,
+        registrationType:
+          registration.registrationType,
 
-        team: registration.teamId || null,
+        paymentStatus:
+          registration.paymentStatus,
 
-        participants: registration.participantIds,
+        status:
+          registration.status,
+
+        event:
+          registration.eventId,
+
+        team:
+          registration.teamId || null,
+
+        participants,
       },
     });
   } catch (error) {
-    console.error("Get registration error:", error);
+    console.error(
+      "Get registration error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -330,7 +382,7 @@ const getRegistration = async (req, res) => {
 };
 
 // =====================================================
-// ADMIN: GET REGISTRATIONS
+// ADMIN / STAFF: GET REGISTRATIONS
 // GET /api/admin/registrations
 // =====================================================
 
@@ -338,44 +390,79 @@ const getRegistrations = async (req, res) => {
   try {
     const {
       eventId,
-      paymentStatus,
-      attendanceStatus,
       search,
+      paymentStatus,
+      registrationType,
+      status,
+      attendanceStatus,
       page = 1,
       limit = 20,
     } = req.query;
 
+    // -------------------------------------------------
+    // ROLE ACCESS
+    // -------------------------------------------------
+
+    const accessibleEventIds =
+      await getAccessibleEventIds(req);
+
+    // -------------------------------------------------
+    // BASE QUERY
+    // -------------------------------------------------
+
     const registrationQuery = {};
 
-    // -------------------------------------------------
-    // Filter by event
-    // -------------------------------------------------
-
-    if (eventId) {
-      registrationQuery.eventId = eventId;
+    // SUPER_ADMIN sees all events.
+    // Other roles only see assigned events.
+    if (accessibleEventIds !== null) {
+      registrationQuery.eventId = {
+        $in: accessibleEventIds,
+      };
     }
 
-    // -------------------------------------------------
-    // Filter by payment status
-    // -------------------------------------------------
+    // Optional event filter.
+    if (eventId) {
+      if (accessibleEventIds === null) {
+        registrationQuery.eventId = eventId;
+      } else {
+        const hasAccess = accessibleEventIds.some(
+          (id) => id.toString() === eventId.toString()
+        );
+
+        if (!hasAccess) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "You are not authorized to view registrations for this event",
+          });
+        }
+
+        registrationQuery.eventId = eventId;
+      }
+    }
 
     if (paymentStatus) {
       registrationQuery.paymentStatus = paymentStatus;
     }
 
-    const pageNumber = Math.max(Number(page) || 1, 1);
-    const limitNumber = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    if (registrationType) {
+      registrationQuery.registrationType = registrationType;
+    }
 
-    const skip = (pageNumber - 1) * limitNumber;
+    if (status) {
+      registrationQuery.status = status;
+    }
 
     // -------------------------------------------------
-    // Get registrations
+    // FETCH DATA
     // -------------------------------------------------
 
-    const registrations = await Registration.find(registrationQuery)
+    let registrations = await Registration.find(
+      registrationQuery
+    )
       .populate(
         "eventId",
-        "title slug category date venue fee imageUrl"
+        "title slug category date venue fee imageUrl capacity status registrationCount"
       )
       .populate(
         "participantIds",
@@ -386,262 +473,46 @@ const getRegistrations = async (req, res) => {
         "teamId name leaderId status"
       )
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber)
       .lean();
 
     // -------------------------------------------------
-    // Search
+    // SEARCH
     // -------------------------------------------------
 
-    let filteredRegistrations = registrations;
+    if (search && search.trim()) {
+      const searchText = search
+        .trim()
+        .toLowerCase();
 
-    if (search) {
-      const searchText = search.toLowerCase().trim();
-
-      filteredRegistrations = registrations.filter((registration) => {
-        const registrationMatch =
-          registration.registrationId
-            ?.toLowerCase()
-            .includes(searchText);
-
-        const participantMatch =
-          registration.participantIds?.some(
-            (participant) =>
-              participant.name
-                ?.toLowerCase()
-                .includes(searchText) ||
-              participant.collegeId
-                ?.toLowerCase()
-                .includes(searchText) ||
-              participant.email
-                ?.toLowerCase()
-                .includes(searchText)
-          );
-
-        const teamMatch =
-          registration.teamId?.teamId
-            ?.toLowerCase()
-            .includes(searchText) ||
-          registration.teamId?.name
-            ?.toLowerCase()
-            .includes(searchText);
-
-        return (
-          registrationMatch ||
-          participantMatch ||
-          teamMatch
-        );
-      });
-    }
-
-    // -------------------------------------------------
-    // Attendance filter
-    // -------------------------------------------------
-
-    if (attendanceStatus) {
-      filteredRegistrations = filteredRegistrations.filter(
-        (registration) =>
-          registration.participantIds?.some(
-            (participant) =>
-              participant.attendanceStatus === attendanceStatus
-          )
-      );
-    }
-
-    // -------------------------------------------------
-    // Total
-    // -------------------------------------------------
-
-    const total = await Registration.countDocuments(
-      registrationQuery
-    );
-
-    // -------------------------------------------------
-    // Response
-    // -------------------------------------------------
-
-    return res.status(200).json({
-      success: true,
-      page: pageNumber,
-      limit: limitNumber,
-      total,
-      count: filteredRegistrations.length,
-      registrations: filteredRegistrations,
-    });
-  } catch (error) {
-    console.error("Get registrations error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-};
-
-// =====================================================
-// ADMIN: GET SINGLE REGISTRATION
-// GET /api/admin/registrations/:id
-// =====================================================
-
-const getRegistrationById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // -------------------------------------------------
-    // Validate ID
-    // -------------------------------------------------
-
-    if (!id || !id.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Registration ID is required",
-      });
-    }
-
-    // -------------------------------------------------
-    // IMPORTANT:
-    // The API receives REG-XXXXXXXXXXXX.
-    //
-    // DO NOT use:
-    // Registration.findById(id)
-    //
-    // because findById() searches MongoDB _id,
-    // which is an ObjectId.
-    //
-    // We use findOne() against our custom
-    // registrationId field.
-    // -------------------------------------------------
-
-    const registrationId = id.trim().toUpperCase();
-
-    const registration = await Registration.findOne({
-      registrationId,
-    })
-      .populate(
-        "eventId",
-        "title slug category description imageUrl date startTime endTime venue fee registrationStart registrationEnd"
-      )
-      .populate(
-        "participantIds",
-        "registrationId name collegeId email phone department year customFields attendanceStatus checkedInAt checkedInBy"
-      )
-      .populate(
-        "teamId",
-        "teamId name leaderId status"
-      );
-
-    // -------------------------------------------------
-    // Not found
-    // -------------------------------------------------
-
-    if (!registration) {
-      return res.status(404).json({
-        success: false,
-        message: "Registration not found",
-      });
-    }
-
-    // -------------------------------------------------
-    // Response
-    // -------------------------------------------------
-
-    return res.status(200).json({
-      success: true,
-      registration,
-    });
-  } catch (error) {
-    console.error("Get registration by ID error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-};
-
-// =====================================================
-// ADMIN: EXPORT REGISTRATIONS
-// GET /api/admin/registrations/export
-// =====================================================
-
-const exportRegistrations = async (req, res) => {
-  try {
-    const {
-      eventId,
-      paymentStatus,
-      attendanceStatus,
-      search,
-    } = req.query;
-
-    const query = {};
-
-    // -------------------------------------------------
-    // Event filter
-    // -------------------------------------------------
-
-    if (eventId) {
-      query.eventId = eventId;
-    }
-
-    // -------------------------------------------------
-    // Payment filter
-    // -------------------------------------------------
-
-    if (paymentStatus) {
-      query.paymentStatus = paymentStatus;
-    }
-
-    // -------------------------------------------------
-    // Get registrations
-    // -------------------------------------------------
-
-    const registrations = await Registration.find(query)
-      .populate(
-        "eventId",
-        "title slug category fee"
-      )
-      .populate(
-        "participantIds",
-        "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
-      )
-      .populate(
-        "teamId",
-        "teamId name leaderId status"
-      )
-      .sort({ createdAt: -1 });
-
-    let filteredRegistrations = registrations;
-
-    // -------------------------------------------------
-    // Search
-    // -------------------------------------------------
-
-    if (search) {
-      const searchText = search.toLowerCase().trim();
-
-      filteredRegistrations = registrations.filter(
+      registrations = registrations.filter(
         (registration) => {
           const registrationMatch =
             registration.registrationId
               ?.toLowerCase()
               .includes(searchText);
 
+          const eventMatch =
+            registration.eventId?.title
+              ?.toLowerCase()
+              .includes(searchText);
+
           const participantMatch =
             registration.participantIds?.some(
-              (participant) =>
-                [
+              (participant) => {
+                return [
                   participant.name,
                   participant.collegeId,
                   participant.email,
                   participant.phone,
+                  participant.department,
                 ]
                   .filter(Boolean)
                   .some((value) =>
                     String(value)
                       .toLowerCase()
                       .includes(searchText)
-                  )
+                  );
+              }
             );
 
           const teamMatch =
@@ -654,6 +525,7 @@ const exportRegistrations = async (req, res) => {
 
           return (
             registrationMatch ||
+            eventMatch ||
             participantMatch ||
             teamMatch
           );
@@ -662,12 +534,430 @@ const exportRegistrations = async (req, res) => {
     }
 
     // -------------------------------------------------
-    // Attendance filter
+    // ATTENDANCE FILTER
     // -------------------------------------------------
 
     if (attendanceStatus) {
-      filteredRegistrations =
-        filteredRegistrations.filter(
+      registrations = registrations.filter(
+        (registration) =>
+          registration.participantIds?.some(
+            (participant) =>
+              participant.attendanceStatus ===
+              attendanceStatus
+          )
+      );
+    }
+
+    // -------------------------------------------------
+    // TOTAL AFTER ALL FILTERS
+    // -------------------------------------------------
+
+    const total = registrations.length;
+
+    // -------------------------------------------------
+    // PAGINATION
+    // -------------------------------------------------
+
+    const pageNumber = Math.max(
+      Number(page) || 1,
+      1
+    );
+
+    const limitNumber = Math.min(
+      Math.max(Number(limit) || 20, 1),
+      100
+    );
+
+    const totalPages =
+      total === 0
+        ? 1
+        : Math.ceil(total / limitNumber);
+
+    const safePage = Math.min(
+      pageNumber,
+      totalPages
+    );
+
+    const skip =
+      (safePage - 1) * limitNumber;
+
+    const paginatedRegistrations =
+      registrations.slice(
+        skip,
+        skip + limitNumber
+      );
+
+    // -------------------------------------------------
+    // NORMALIZE RESPONSE FOR FRONTEND
+    // -------------------------------------------------
+
+    const normalizedRegistrations =
+      paginatedRegistrations.map(
+        (registration) => {
+          const firstParticipant =
+            registration.participantIds?.[0] ||
+            null;
+
+          const team =
+            registration.teamId || null;
+
+          return {
+            _id: registration._id,
+
+            registrationId:
+              registration.registrationId,
+
+            registrationType:
+              registration.registrationType,
+
+            paymentStatus:
+              registration.paymentStatus,
+
+            status:
+              registration.status,
+
+            createdAt:
+              registration.createdAt,
+
+            event:
+              registration.eventId || null,
+
+            participants:
+              registration.participantIds || [],
+
+            participant:
+              firstParticipant,
+
+            team: team
+              ? {
+                  teamId: team.teamId,
+                  teamName: team.name,
+                  leaderId: team.leaderId,
+                  status: team.status,
+                }
+              : null,
+          };
+        }
+      );
+
+    return res.status(200).json({
+      success: true,
+
+      page: safePage,
+
+      limit: limitNumber,
+
+      total,
+
+      count:
+        normalizedRegistrations.length,
+
+      pagination: {
+        page: safePage,
+        limit: limitNumber,
+        total,
+        totalPages,
+        hasNextPage:
+          safePage < totalPages,
+        hasPreviousPage:
+          safePage > 1,
+      },
+
+      registrations:
+        normalizedRegistrations,
+    });
+  } catch (error) {
+    console.error(
+      "Get registrations error:",
+      error
+    );
+
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+};
+
+// =====================================================
+// GET SINGLE REGISTRATION
+// GET /api/admin/registrations/:id
+// =====================================================
+
+const getRegistrationById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !id.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Registration ID is required",
+      });
+    }
+
+    const registrationId =
+      id.trim().toUpperCase();
+
+    const registration =
+      await Registration.findOne({
+        registrationId,
+      })
+        .populate(
+          "eventId",
+          "title slug category description imageUrl date startTime endTime venue fee registrationStart registrationEnd capacity status registrationCount"
+        )
+        .populate(
+          "participantIds",
+          "registrationId name collegeId email phone department year customFields attendanceStatus checkedInAt checkedInBy"
+        )
+        .populate(
+          "teamId",
+          "teamId name leaderId status"
+        )
+        .lean();
+
+    if (!registration) {
+      return res.status(404).json({
+        success: false,
+        message: "Registration not found",
+      });
+    }
+
+    // -------------------------------------------------
+    // EVENT ACCESS CHECK
+    // -------------------------------------------------
+
+    const accessibleEventIds =
+      await getAccessibleEventIds(req);
+
+    if (accessibleEventIds !== null) {
+      const eventId =
+        registration.eventId?._id?.toString();
+
+      const hasAccess =
+        eventId &&
+        accessibleEventIds.some(
+          (assignedEventId) =>
+            assignedEventId.toString() ===
+            eventId
+        );
+
+      if (!hasAccess) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "You are not authorized to view this registration",
+        });
+      }
+    }
+
+    // -------------------------------------------------
+    // NORMALIZED RESPONSE
+    // -------------------------------------------------
+
+    const firstParticipant =
+      registration.participantIds?.[0] ||
+      null;
+
+    const team =
+      registration.teamId || null;
+
+    return res.status(200).json({
+      success: true,
+
+      registration: {
+        _id: registration._id,
+
+        registrationId:
+          registration.registrationId,
+
+        registrationType:
+          registration.registrationType,
+
+        paymentStatus:
+          registration.paymentStatus,
+
+        status:
+          registration.status,
+
+        createdAt:
+          registration.createdAt,
+
+        event:
+          registration.eventId,
+
+        participants:
+          registration.participantIds || [],
+
+        participant:
+          firstParticipant,
+
+        team: team
+          ? {
+              teamId: team.teamId,
+              teamName: team.name,
+              leaderId: team.leaderId,
+              status: team.status,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Get registration by ID error:",
+      error
+    );
+
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+};
+
+// =====================================================
+// EXPORT REGISTRATIONS
+// GET /api/admin/registrations/export
+// =====================================================
+
+const exportRegistrations = async (req, res) => {
+  try {
+    const {
+      eventId,
+      paymentStatus,
+      attendanceStatus,
+      search,
+    } = req.query;
+
+    // -------------------------------------------------
+    // ROLE ACCESS
+    // -------------------------------------------------
+
+    const accessibleEventIds =
+      await getAccessibleEventIds(req);
+
+    const query = {};
+
+    if (accessibleEventIds !== null) {
+      query.eventId = {
+        $in: accessibleEventIds,
+      };
+    }
+
+    if (eventId) {
+      if (accessibleEventIds === null) {
+        query.eventId = eventId;
+      } else {
+        const hasAccess =
+          accessibleEventIds.some(
+            (assignedEventId) =>
+              assignedEventId.toString() ===
+              eventId.toString()
+          );
+
+        if (!hasAccess) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "You are not authorized to export this event's registrations",
+          });
+        }
+
+        query.eventId = eventId;
+      }
+    }
+
+    if (paymentStatus) {
+      query.paymentStatus = paymentStatus;
+    }
+
+    let registrations =
+      await Registration.find(query)
+        .populate(
+          "eventId",
+          "title slug category fee"
+        )
+        .populate(
+          "participantIds",
+          "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
+        )
+        .populate(
+          "teamId",
+          "teamId name leaderId status"
+        )
+        .sort({ createdAt: -1 });
+
+    // -------------------------------------------------
+    // SEARCH
+    // -------------------------------------------------
+
+    if (search && search.trim()) {
+      const searchText =
+        search.trim().toLowerCase();
+
+      registrations =
+        registrations.filter(
+          (registration) => {
+            const registrationMatch =
+              registration.registrationId
+                ?.toLowerCase()
+                .includes(searchText);
+
+            const participantMatch =
+              registration.participantIds?.some(
+                (participant) =>
+                  [
+                    participant.name,
+                    participant.collegeId,
+                    participant.email,
+                    participant.phone,
+                  ]
+                    .filter(Boolean)
+                    .some((value) =>
+                      String(value)
+                        .toLowerCase()
+                        .includes(searchText)
+                    )
+              );
+
+            const teamMatch =
+              registration.teamId?.teamId
+                ?.toLowerCase()
+                .includes(searchText) ||
+              registration.teamId?.name
+                ?.toLowerCase()
+                .includes(searchText);
+
+            return (
+              registrationMatch ||
+              participantMatch ||
+              teamMatch
+            );
+          }
+        );
+    }
+
+    // -------------------------------------------------
+    // ATTENDANCE FILTER
+    // -------------------------------------------------
+
+    if (attendanceStatus) {
+      registrations =
+        registrations.filter(
           (registration) =>
             registration.participantIds?.some(
               (participant) =>
@@ -678,25 +968,23 @@ const exportRegistrations = async (req, res) => {
     }
 
     // -------------------------------------------------
-    // Get payments
+    // PAYMENTS
     // -------------------------------------------------
 
     const registrationIds =
-      filteredRegistrations.map(
-        (registration) => registration._id
+      registrations.map(
+        (registration) =>
+          registration._id
       );
 
-    const payments = await Payment.find({
-      registrationId: {
-        $in: registrationIds,
-      },
-    }).sort({
-      createdAt: -1,
-    });
-
-    // -------------------------------------------------
-    // Map latest payment per registration
-    // -------------------------------------------------
+    const payments =
+      await Payment.find({
+        registrationId: {
+          $in: registrationIds,
+        },
+      }).sort({
+        createdAt: -1,
+      });
 
     const paymentsMap = new Map();
 
@@ -710,18 +998,14 @@ const exportRegistrations = async (req, res) => {
     }
 
     // -------------------------------------------------
-    // Generate Excel
+    // GENERATE EXCEL
     // -------------------------------------------------
 
     const buffer =
       await generateRegistrationExcel(
-        filteredRegistrations,
+        registrations,
         paymentsMap
       );
-
-    // -------------------------------------------------
-    // Response headers
-    // -------------------------------------------------
 
     res.setHeader(
       "Content-Type",
@@ -740,9 +1024,17 @@ const exportRegistrations = async (req, res) => {
       error
     );
 
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
     return res.status(500).json({
       success: false,
-      message: "Failed to export registrations",
+      message:
+        "Failed to export registrations",
     });
   }
 };

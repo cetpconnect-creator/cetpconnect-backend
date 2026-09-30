@@ -1,4 +1,48 @@
+// models/Event.js
+
 const mongoose = require("mongoose");
+
+const registrationFieldSchema =
+  new mongoose.Schema(
+    {
+      name: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+
+      label: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+
+      type: {
+        type: String,
+        enum: [
+          "text",
+          "email",
+          "phone",
+          "number",
+          "select",
+        ],
+        default: "text",
+      },
+
+      required: {
+        type: Boolean,
+        default: false,
+      },
+
+      options: {
+        type: [String],
+        default: [],
+      },
+    },
+    {
+      _id: false,
+    }
+  );
 
 const eventSchema = new mongoose.Schema(
   {
@@ -25,6 +69,7 @@ const eventSchema = new mongoose.Schema(
     description: {
       type: String,
       required: true,
+      trim: true,
     },
 
     imageUrl: {
@@ -34,8 +79,8 @@ const eventSchema = new mongoose.Schema(
     },
 
     rules: {
-      type: String,
-      default: "",
+      type: [String],
+      default: [],
     },
 
     date: {
@@ -56,6 +101,7 @@ const eventSchema = new mongoose.Schema(
     venue: {
       type: String,
       required: true,
+      trim: true,
     },
 
     registrationStart: {
@@ -102,19 +148,26 @@ const eventSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Cloudinary URL generated after QR upload
     paymentQrUrl: {
       type: String,
+      trim: true,
       default: "",
     },
 
     registrationFields: {
-      type: [String],
+      type: [registrationFieldSchema],
       default: [],
     },
 
     status: {
       type: String,
-      enum: ["DRAFT", "PUBLISHED", "CLOSED", "CANCELLED"],
+      enum: [
+        "DRAFT",
+        "PUBLISHED",
+        "CLOSED",
+        "CANCELLED",
+      ],
       default: "DRAFT",
     },
 
@@ -129,4 +182,5 @@ const eventSchema = new mongoose.Schema(
   }
 );
 
-module.exports = mongoose.model("Event", eventSchema);
+module.exports =
+  mongoose.model("Event", eventSchema);

@@ -3,15 +3,100 @@ const mongoose = require("mongoose");
 const Registration = require("../models/Registration");
 const Payment = require("../models/Payment");
 const Team = require("../models/Team");
+const User = require("../models/User");
 
 /* =========================================================
    HELPERS
 ========================================================= */
 
 function isValidObjectId(value) {
-  return mongoose.Types.ObjectId.isValid(
-    value
+  return mongoose.Types.ObjectId.isValid(value);
+}
+
+/*
+ * Returns:
+ *   null       -> SUPER_ADMIN can access everything
+ *   []         -> user has no assigned events
+ *   [ids...]   -> assigned event IDs
+ */
+async function getAccessibleEventIds(req) {
+  if (!req.user) {
+    return [];
+  }
+
+  if (req.user.role === "SUPER_ADMIN") {
+    return null;
+  }
+
+  const user = await User.findById(
+    req.user.userId
+  ).select("assignedEvents role isActive");
+
+  if (!user) {
+    const error = new Error(
+      "User account not found"
+    );
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (!user.isActive) {
+    const error = new Error(
+      "User account is inactive"
+    );
+    error.statusCode = 403;
+    throw error;
+  }
+
+  return (user.assignedEvents || []).map(
+    (eventId) => eventId.toString()
   );
+}
+
+/*
+ * Check whether the current user can access
+ * a particular event.
+ */
+async function checkEventAccess(
+  req,
+  eventId
+) {
+  if (!eventId) {
+    const error = new Error(
+      "Event information is missing"
+    );
+
+    error.statusCode = 400;
+
+    throw error;
+  }
+
+  const accessibleEventIds =
+    await getAccessibleEventIds(req);
+
+  /*
+   * SUPER_ADMIN
+   */
+  if (accessibleEventIds === null) {
+    return true;
+  }
+
+  const allowed =
+    accessibleEventIds.includes(
+      eventId.toString()
+    );
+
+  if (!allowed) {
+    const error = new Error(
+      "You do not have access to this event"
+    );
+
+    error.statusCode = 403;
+
+    throw error;
+  }
+
+  return true;
 }
 
 /* =========================================================
@@ -119,6 +204,7 @@ const submitPayment = async (req, res) => {
 
     return res.status(201).json({
       success: true,
+
       message:
         "Payment submitted successfully",
 
@@ -272,6 +358,7 @@ const submitTeamPayment = async (
 
     return res.status(201).json({
       success: true,
+
       message:
         "Team payment submitted successfully",
 
@@ -334,7 +421,7 @@ const getPaymentByRegistration =
         });
 
       /*
-       * Also allow Mongo Registration._id.
+       * Also support MongoDB Registration._id
        */
       if (
         !registration &&
@@ -354,6 +441,14 @@ const getPaymentByRegistration =
           registrationId: id,
         });
       }
+
+      /*
+       * ROLE-BASED EVENT ACCESS
+       */
+      await checkEventAccess(
+        req,
+        registration.eventId
+      );
 
       const payment =
         await Payment.findOne({
@@ -376,6 +471,7 @@ const getPaymentByRegistration =
       if (!payment) {
         return res.status(404).json({
           success: false,
+
           message:
             "No payment found for this registration",
 
@@ -453,10 +549,14 @@ const getPaymentByRegistration =
         error
       );
 
-      return res.status(500).json({
+      return res.status(
+        error.statusCode || 500
+      ).json({
         success: false,
         message:
-          "Failed to load payment",
+          error.statusCode
+            ? error.message
+            : "Failed to load payment",
       });
     }
   };
@@ -491,6 +591,14 @@ const verifyPayment = async (
           "Payment not found",
       });
     }
+
+    /*
+     * ROLE-BASED EVENT ACCESS
+     */
+    await checkEventAccess(
+      req,
+      payment.eventId
+    );
 
     if (
       payment.status !==
@@ -547,6 +655,7 @@ const verifyPayment = async (
 
     return res.status(200).json({
       success: true,
+
       message:
         "Payment verified successfully",
 
@@ -558,10 +667,14 @@ const verifyPayment = async (
       error
     );
 
-    return res.status(500).json({
+    return res.status(
+      error.statusCode || 500
+    ).json({
       success: false,
       message:
-        "Failed to verify payment",
+        error.statusCode
+          ? error.message
+          : "Failed to verify payment",
     });
   }
 };
@@ -583,14 +696,6 @@ const rejectPayment = async (
       "string"
         ? req.body.rejectionReason.trim()
         : "";
-
-    console.log(
-      "REJECT PAYMENT:",
-      {
-        paymentId: id,
-        rejectionReason,
-      }
-    );
 
     if (!isValidObjectId(id)) {
       return res.status(400).json({
@@ -618,6 +723,14 @@ const rejectPayment = async (
           "Payment not found",
       });
     }
+
+    /*
+     * ROLE-BASED EVENT ACCESS
+     */
+    await checkEventAccess(
+      req,
+      payment.eventId
+    );
 
     if (
       payment.status !==
@@ -658,10 +771,6 @@ const rejectPayment = async (
 
         /*
          * Synchronize team status.
-         *
-         * Remove this block if your Team
-         * schema does not allow
-         * PAYMENT_REJECTED.
          */
         if (
           registration.registrationType ===
@@ -681,6 +790,7 @@ const rejectPayment = async (
 
     return res.status(200).json({
       success: true,
+
       message:
         "Payment rejected successfully",
 
@@ -692,10 +802,14 @@ const rejectPayment = async (
       error
     );
 
-    return res.status(500).json({
+    return res.status(
+      error.statusCode || 500
+    ).json({
       success: false,
       message:
-        "Failed to reject payment",
+        error.statusCode
+          ? error.message
+          : "Failed to reject payment",
     });
   }
 };
@@ -711,4 +825,3 @@ module.exports = {
   verifyPayment,
   rejectPayment,
 };
-

@@ -11,12 +11,14 @@ const {
 
 const router = express.Router();
 
+// =====================================================
+// PUBLIC REGISTRATION
+// =====================================================
+
 router.post("/", createRegistration);
 
 router.post("/team", createTeamRegistration);
 
 router.get("/:registrationId", getRegistration);
-
-
 
 module.exports = router;

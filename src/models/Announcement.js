@@ -24,15 +24,15 @@ const announcementSchema = new mongoose.Schema(
       default: null,
     },
 
+    isPublished: {
+      type: Boolean,
+      default: true,
+    },
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
-    },
-
-    isActive: {
-      type: Boolean,
-      default: true,
     },
   },
   {
@@ -40,7 +40,6 @@ const announcementSchema = new mongoose.Schema(
   }
 );
 
-announcementSchema.index({ publishedAt: -1 });
-announcementSchema.index({ expiresAt: 1 });
-
-module.exports = mongoose.model("Announcement", announcementSchema);
+module.exports =
+  mongoose.models.Announcement ||
+  mongoose.model("Announcement", announcementSchema);

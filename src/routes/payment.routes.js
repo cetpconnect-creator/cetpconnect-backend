@@ -9,14 +9,20 @@ const upload = require("../middleware/upload");
 
 const router = express.Router();
 
-/* Individual payment */
+/* =========================================================
+   INDIVIDUAL PAYMENT
+========================================================= */
+
 router.post(
   "/:registrationId",
   upload.single("paymentScreenshot"),
   submitPayment
 );
 
-/* Team payment */
+/* =========================================================
+   TEAM PAYMENT
+========================================================= */
+
 router.post(
   "/team/:teamId",
   upload.single("paymentScreenshot"),
