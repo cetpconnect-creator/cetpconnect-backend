@@ -14,6 +14,14 @@ const checkinRoutes = require("./routes/checkin.routes");
 
 const app = express();
 
+/*
+ * Render runs the app behind a proxy/load balancer.
+ * Trust the first proxy so Express can correctly
+ * read X-Forwarded-For and express-rate-limit can
+ * identify client IPs correctly.
+ */
+app.set("trust proxy", 1);
+
 app.use(helmet());
 
 app.use(
