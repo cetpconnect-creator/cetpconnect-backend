@@ -111,6 +111,7 @@ const createEvent = async (
       registrationType,
       minTeamSize,
       maxTeamSize,
+      prizeMoney,
       registrationFields,
       status,
     } = req.body;
@@ -246,11 +247,59 @@ const createEvent = async (
           )
             ? registrationFields
             : JSON.parse(
-                registrationFields
-              );
+              registrationFields
+            );
       } catch {
         parsedRegistrationFields =
           [];
+      }
+    }
+
+    /* =====================================================
+   PARSE PRIZE MONEY
+===================================================== */
+
+    let parsedPrizeMoney = {
+      first: null,
+      second: null,
+      third: null,
+    };
+
+    if (prizeMoney) {
+      try {
+        const parsed =
+          typeof prizeMoney === "string"
+            ? JSON.parse(prizeMoney)
+            : prizeMoney;
+
+        parsedPrizeMoney = {
+          first:
+            parsed?.first !== undefined &&
+              parsed?.first !== null &&
+              parsed?.first !== ""
+              ? Number(parsed.first)
+              : null,
+
+          second:
+            parsed?.second !== undefined &&
+              parsed?.second !== null &&
+              parsed?.second !== ""
+              ? Number(parsed.second)
+              : null,
+
+          third:
+            parsed?.third !== undefined &&
+              parsed?.third !== null &&
+              parsed?.third !== ""
+              ? Number(parsed.third)
+              : null,
+        };
+      } catch {
+        parsedPrizeMoney = {
+          first: null,
+          second: null,
+          third: null,
+        };
       }
     }
 
@@ -297,21 +346,24 @@ const createEvent = async (
 
         minTeamSize:
           registrationType ===
-          "TEAM"
+            "TEAM"
             ? Number(
-                minTeamSize
-              ) || 2
+              minTeamSize
+            ) || 2
             : null,
 
         maxTeamSize:
           registrationType ===
-          "TEAM"
+            "TEAM"
             ? Number(
-                maxTeamSize
-              ) || 4
+              maxTeamSize
+            ) || 4
             : null,
 
         paymentQrUrl,
+
+        prizeMoney:
+          parsedPrizeMoney,
 
         registrationFields:
           parsedRegistrationFields,
@@ -564,8 +616,8 @@ const updateEvent = async (
           )
             ? req.body.rules
             : JSON.parse(
-                req.body.rules
-              );
+              req.body.rules
+            );
       } catch {
         event.rules = String(
           req.body.rules
@@ -589,14 +641,60 @@ const updateEvent = async (
               .registrationFields
           )
             ? req.body
-                .registrationFields
+              .registrationFields
             : JSON.parse(
-                req.body
-                  .registrationFields
-              );
+              req.body
+                .registrationFields
+            );
       } catch {
         event.registrationFields =
           [];
+      }
+    }
+
+    /* =====================================================
+   UPDATE PRIZE MONEY
+===================================================== */
+
+    if (
+      req.body.prizeMoney !== undefined
+    ) {
+      try {
+        const parsed =
+          typeof req.body.prizeMoney === "string"
+            ? JSON.parse(
+              req.body.prizeMoney
+            )
+            : req.body.prizeMoney;
+
+        event.prizeMoney = {
+          first:
+            parsed?.first !== undefined &&
+              parsed?.first !== null &&
+              parsed?.first !== ""
+              ? Number(parsed.first)
+              : null,
+
+          second:
+            parsed?.second !== undefined &&
+              parsed?.second !== null &&
+              parsed?.second !== ""
+              ? Number(parsed.second)
+              : null,
+
+          third:
+            parsed?.third !== undefined &&
+              parsed?.third !== null &&
+              parsed?.third !== ""
+              ? Number(parsed.third)
+              : null,
+        };
+      } catch {
+        event.prizeMoney = {
+          first: null,
+          second: null,
+          third: null,
+        };
       }
     }
 
@@ -630,7 +728,7 @@ const updateEvent = async (
       req.body.minTeamSize !==
       undefined &&
       req.body.registrationType ===
-        "TEAM"
+      "TEAM"
     ) {
       event.minTeamSize =
         Number(
@@ -642,7 +740,7 @@ const updateEvent = async (
       req.body.maxTeamSize !==
       undefined &&
       req.body.registrationType ===
-        "TEAM"
+      "TEAM"
     ) {
       event.maxTeamSize =
         Number(
@@ -774,6 +872,7 @@ const getPublishedEvents = async (
             "registrationEnd",
             "fee",
             "capacity",
+            "prizeMoney",
             "registrationType",
             "minTeamSize",
             "maxTeamSize",

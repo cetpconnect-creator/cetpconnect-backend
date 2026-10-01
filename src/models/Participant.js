@@ -58,6 +58,15 @@ const participantSchema = new mongoose.Schema(
       trim: true,
     },
 
+    /*
+     * Stores event-specific values.
+     *
+     * Example:
+     * {
+     *   githubUrl: "https://github.com/example",
+     *   experience: "Advanced"
+     * }
+     */
     customFields: {
       type: Map,
       of: String,
@@ -73,7 +82,10 @@ const participantSchema = new mongoose.Schema(
 
     attendanceStatus: {
       type: String,
-      enum: ["NOT_CHECKED_IN", "CHECKED_IN"],
+      enum: [
+        "NOT_CHECKED_IN",
+        "CHECKED_IN",
+      ],
       default: "NOT_CHECKED_IN",
     },
 
@@ -93,8 +105,21 @@ const participantSchema = new mongoose.Schema(
   }
 );
 
-participantSchema.index({ eventId: 1 });
-participantSchema.index({ teamId: 1 });
-participantSchema.index({ eventId: 1, collegeId: 1 });
+participantSchema.index({
+  eventId: 1,
+});
 
-module.exports = mongoose.model("Participant", participantSchema);
+participantSchema.index({
+  teamId: 1,
+});
+
+participantSchema.index({
+  eventId: 1,
+  collegeId: 1,
+});
+
+module.exports =
+  mongoose.model(
+    "Participant",
+    participantSchema
+  );

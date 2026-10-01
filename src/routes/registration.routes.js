@@ -7,6 +7,7 @@ const {
 
 const {
   createTeamRegistration,
+  getTeamRegistration,
 } = require("../controllers/team.controller");
 
 const router = express.Router();
@@ -19,6 +20,10 @@ router.post("/", createRegistration);
 
 router.post("/team", createTeamRegistration);
 
+router.get("/team/:teamId",getTeamRegistration);
+
 router.get("/:registrationId", getRegistration);
+
+
 
 module.exports = router;

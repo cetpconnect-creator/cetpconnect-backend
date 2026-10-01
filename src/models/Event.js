@@ -1,6 +1,8 @@
-// models/Event.js
-
 const mongoose = require("mongoose");
+
+/* =========================================================
+   REGISTRATION FIELD
+========================================================= */
 
 const registrationFieldSchema =
   new mongoose.Schema(
@@ -44,143 +46,231 @@ const registrationFieldSchema =
     }
   );
 
-const eventSchema = new mongoose.Schema(
-  {
-    title: {
-      type: String,
-      required: true,
-      trim: true,
-    },
+/* =========================================================
+   PRIZE MONEY
+========================================================= */
 
-    slug: {
-      type: String,
-      required: true,
-      unique: true,
-      trim: true,
-      lowercase: true,
-    },
+const prizeMoneySchema =
+  new mongoose.Schema(
+    {
+      first: {
+        type: Number,
+        default: null,
+        min: 0,
+      },
 
-    category: {
-      type: String,
-      enum: ["YUKTHIX", "VAAGA"],
-      required: true,
-    },
+      second: {
+        type: Number,
+        default: null,
+        min: 0,
+      },
 
-    description: {
-      type: String,
-      required: true,
-      trim: true,
+      third: {
+        type: Number,
+        default: null,
+        min: 0,
+      },
     },
+    {
+      _id: false,
+    }
+  );
 
-    imageUrl: {
-      type: String,
-      trim: true,
-      default: "",
-    },
+/* =========================================================
+   EVENT
+========================================================= */
 
-    rules: {
-      type: [String],
-      default: [],
-    },
+const eventSchema =
+  new mongoose.Schema(
+    {
+      title: {
+        type: String,
+        required: true,
+        trim: true,
+      },
 
-    date: {
-      type: Date,
-      required: true,
-    },
+      slug: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true,
+        lowercase: true,
+      },
 
-    startTime: {
-      type: String,
-      required: true,
-    },
+      category: {
+        type: String,
+        enum: [
+          "YUKTHIX",
+          "VAAGA",
+        ],
+        required: true,
+      },
 
-    endTime: {
-      type: String,
-      required: true,
-    },
+      description: {
+        type: String,
+        required: true,
+        trim: true,
+      },
 
-    venue: {
-      type: String,
-      required: true,
-      trim: true,
-    },
+      imageUrl: {
+        type: String,
+        trim: true,
+        default: "",
+      },
 
-    registrationStart: {
-      type: Date,
-      required: true,
-    },
+      rules: {
+        type: [String],
+        default: [],
+      },
 
-    registrationEnd: {
-      type: Date,
-      required: true,
-    },
+      /* =====================================================
+         EVENT DATE / TIME
+      ===================================================== */
 
-    fee: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
+      date: {
+        type: Date,
+        required: true,
+      },
 
-    capacity: {
-      type: Number,
-      required: true,
-      min: 1,
-    },
+      startTime: {
+        type: String,
+        required: true,
+      },
 
-    registrationCount: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
+      endTime: {
+        type: String,
+        required: true,
+      },
 
-    registrationType: {
-      type: String,
-      enum: ["INDIVIDUAL", "TEAM"],
-      required: true,
-    },
+      venue: {
+        type: String,
+        required: true,
+        trim: true,
+      },
 
-    minTeamSize: {
-      type: Number,
-      default: null,
-    },
+      /* =====================================================
+         REGISTRATION WINDOW
+      ===================================================== */
 
-    maxTeamSize: {
-      type: Number,
-      default: null,
-    },
+      registrationStart: {
+        type: Date,
+        required: true,
+      },
 
-    // Cloudinary URL generated after QR upload
-    paymentQrUrl: {
-      type: String,
-      trim: true,
-      default: "",
-    },
+      registrationEnd: {
+        type: Date,
+        required: true,
+      },
 
-    registrationFields: {
-      type: [registrationFieldSchema],
-      default: [],
-    },
+      /* =====================================================
+         REGISTRATION / PAYMENT
+      ===================================================== */
 
-    status: {
-      type: String,
-      enum: [
-        "DRAFT",
-        "PUBLISHED",
-        "CLOSED",
-        "CANCELLED",
-      ],
-      default: "DRAFT",
-    },
+      fee: {
+        type: Number,
+        required: true,
+        min: 0,
+      },
 
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
+      capacity: {
+        type: Number,
+        required: true,
+        min: 1,
+      },
+
+      registrationCount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+
+      registrationType: {
+        type: String,
+        enum: [
+          "INDIVIDUAL",
+          "TEAM",
+        ],
+        required: true,
+      },
+
+      minTeamSize: {
+        type: Number,
+        default: null,
+        min: 1,
+      },
+
+      maxTeamSize: {
+        type: Number,
+        default: null,
+        min: 1,
+      },
+
+      paymentQrUrl: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+
+      /* =====================================================
+         PRIZE MONEY
+         
+         Optional:
+         first only
+         first + second
+         first + second + third
+         or none
+      ===================================================== */
+
+      prizeMoney: {
+        type: prizeMoneySchema,
+        default: () => ({
+          first: null,
+          second: null,
+          third: null,
+        }),
+      },
+
+      /* =====================================================
+         CUSTOM REGISTRATION FIELDS
+      ===================================================== */
+
+      registrationFields: {
+        type: [registrationFieldSchema],
+        default: [],
+      },
+
+      /* =====================================================
+         STATUS
+      ===================================================== */
+
+      status: {
+        type: String,
+        enum: [
+          "DRAFT",
+          "PUBLISHED",
+          "CLOSED",
+          "CANCELLED",
+        ],
+        default: "DRAFT",
+      },
+
+      /* =====================================================
+         CREATOR
+      ===================================================== */
+
+      createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true,
+      },
     },
-  },
-  {
-    timestamps: true,
-  }
-);
+    {
+      timestamps: true,
+    }
+  );
 
 module.exports =
-  mongoose.model("Event", eventSchema);
+  mongoose.model(
+    "Event",
+    eventSchema
+  );

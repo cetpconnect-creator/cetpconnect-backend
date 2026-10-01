@@ -47,6 +47,132 @@ const getAccessibleEventIds = async (req) => {
 };
 
 // =====================================================
+// HELPER
+// VALIDATE EVENT-SPECIFIC CUSTOM FIELDS
+// =====================================================
+
+const validateAndNormalizeCustomFields = (
+  fields = [],
+  values = {}
+) => {
+  let source = values;
+
+  // Support JSON string as well as normal object
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      source = {};
+    }
+  }
+
+  if (
+    !source ||
+    typeof source !== "object" ||
+    Array.isArray(source)
+  ) {
+    source = {};
+  }
+
+  const normalized = {};
+
+  for (const field of fields) {
+    const key = String(field.name || "").trim();
+
+    if (!key) {
+      continue;
+    }
+
+    const rawValue = source[key];
+
+    const value =
+      rawValue === undefined || rawValue === null
+        ? ""
+        : String(rawValue).trim();
+
+    // Only save fields configured for this event
+    normalized[key] = value;
+
+    // Required validation
+    if (field.required && !value) {
+      const error = new Error(
+        `${field.label || key} is required.`
+      );
+
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Optional empty field
+    if (!value) {
+      continue;
+    }
+
+    // Email validation
+    if (field.type === "email") {
+      const emailRegex =
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      if (!emailRegex.test(value)) {
+        const error = new Error(
+          `${field.label || key} must be a valid email address.`
+        );
+
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    // Phone validation
+    if (field.type === "phone") {
+      const phoneRegex =
+        /^[0-9+\-\s()]{7,20}$/;
+
+      if (!phoneRegex.test(value)) {
+        const error = new Error(
+          `${field.label || key} must be a valid phone number.`
+        );
+
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    // Number validation
+    if (field.type === "number") {
+      if (Number.isNaN(Number(value))) {
+        const error = new Error(
+          `${field.label || key} must be a valid number.`
+        );
+
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    // Select validation
+    if (field.type === "select") {
+      const options = Array.isArray(field.options)
+        ? field.options.map((option) =>
+            String(option).trim()
+          )
+        : [];
+
+      if (!options.includes(value)) {
+        const error = new Error(
+          `${field.label || key} has an invalid selection.`
+        );
+
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+  }
+
+  return normalized;
+};
+
+// =====================================================
 // CREATE INDIVIDUAL REGISTRATION
 // POST /api/registrations
 // =====================================================
@@ -75,7 +201,8 @@ const createRegistration = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "All required registration fields must be provided",
+        message:
+          "All required registration fields must be provided",
       });
     }
 
@@ -91,7 +218,8 @@ const createRegistration = async (req, res) => {
     if (event.status !== "PUBLISHED") {
       return res.status(400).json({
         success: false,
-        message: "Registration is not available for this event",
+        message:
+          "Registration is not available for this event",
       });
     }
 
@@ -105,8 +233,11 @@ const createRegistration = async (req, res) => {
 
     const now = new Date();
 
-    const registrationStart = new Date(event.registrationStart);
-    const registrationEnd = new Date(event.registrationEnd);
+    const registrationStart =
+      new Date(event.registrationStart);
+
+    const registrationEnd =
+      new Date(event.registrationEnd);
 
     if (now < registrationStart) {
       return res.status(400).json({
@@ -129,58 +260,102 @@ const createRegistration = async (req, res) => {
       });
     }
 
-    const normalizedCollegeId = collegeId.trim();
+    // =====================================================
+    // CUSTOM FIELD VALIDATION
+    // =====================================================
 
-    const existingParticipant = await Participant.findOne({
-      eventId: event._id,
-      collegeId: normalizedCollegeId,
-    });
+    const normalizedCustomFields =
+      validateAndNormalizeCustomFields(
+        event.registrationFields || [],
+        customFields || {}
+      );
+
+    const normalizedCollegeId =
+      collegeId.trim();
+
+    const existingParticipant =
+      await Participant.findOne({
+        eventId: event._id,
+        collegeId: normalizedCollegeId,
+      });
 
     if (existingParticipant) {
       return res.status(409).json({
         success: false,
-        message: "This student is already registered for this event",
+        message:
+          "This student is already registered for this event",
       });
     }
 
     const registrationId =
-      "REG-" + crypto.randomBytes(6).toString("hex").toUpperCase();
+      "REG-" +
+      crypto
+        .randomBytes(6)
+        .toString("hex")
+        .toUpperCase();
 
-    const qrToken = crypto.randomBytes(32).toString("hex");
+    const qrToken =
+      crypto.randomBytes(32).toString("hex");
 
-    const qrImage = await generateParticipantQR(qrToken);
+    const qrImage =
+      await generateParticipantQR(qrToken);
 
-    const participant = await Participant.create({
-      registrationId,
-      eventId: event._id,
-      name: name.trim(),
-      collegeId: normalizedCollegeId,
-      email: email.trim().toLowerCase(),
-      phone: phone.trim(),
-      department: department.trim(),
-      year: year.toString(),
-      customFields: customFields || {},
-      qrToken,
-      attendanceStatus: "NOT_CHECKED_IN",
-    });
+    const participant =
+      await Participant.create({
+        registrationId,
+        eventId: event._id,
+
+        name: name.trim(),
+
+        collegeId: normalizedCollegeId,
+
+        email: email.trim().toLowerCase(),
+
+        phone: phone.trim(),
+
+        department: department.trim(),
+
+        year: year.toString(),
+
+        // Event-specific fields
+        customFields: normalizedCustomFields,
+
+        qrToken,
+
+        attendanceStatus: "NOT_CHECKED_IN",
+      });
 
     const paymentStatus =
-      event.fee > 0 ? "PENDING_PAYMENT" : "PAYMENT_VERIFIED";
+      event.fee > 0
+        ? "PENDING_PAYMENT"
+        : "PAYMENT_VERIFIED";
 
     let registration;
 
     try {
-      registration = await Registration.create({
-        registrationId,
-        eventId: event._id,
-        registrationType: "INDIVIDUAL",
-        participantIds: [participant._id],
-        teamId: null,
-        paymentStatus,
-        status: "ACTIVE",
-      });
+      registration =
+        await Registration.create({
+          registrationId,
+
+          eventId: event._id,
+
+          registrationType: "INDIVIDUAL",
+
+          participantIds: [
+            participant._id,
+          ],
+
+          teamId: null,
+
+          paymentStatus,
+
+          status: "ACTIVE",
+        });
     } catch (registrationError) {
-      await Participant.findByIdAndDelete(participant._id);
+      await Participant.findByIdAndDelete(
+        participant._id
+      );
+
       throw registrationError;
     }
 
@@ -190,33 +365,65 @@ const createRegistration = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Registration created successfully",
+
+      message:
+        "Registration created successfully",
 
       registration: {
-        registrationId: registration.registrationId,
+        registrationId:
+          registration.registrationId,
+
         eventId: event._id,
-        participantId: participant._id,
-        paymentStatus: registration.paymentStatus,
+
+        participantId:
+          participant._id,
+
+        paymentStatus:
+          registration.paymentStatus,
 
         participant: {
           name: participant.name,
-          collegeId: participant.collegeId,
-          email: participant.email,
-          phone: participant.phone,
-          department: participant.department,
-          year: participant.year,
+
+          collegeId:
+            participant.collegeId,
+
+          email:
+            participant.email,
+
+          phone:
+            participant.phone,
+
+          department:
+            participant.department,
+
+          year:
+            participant.year,
+
+          customFields:
+            participant.customFields || {},
         },
 
         qrCode: qrImage,
       },
     });
   } catch (error) {
-    console.error("Create registration error:", error);
+    console.error(
+      "Create registration error:",
+      error
+    );
 
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
-        message: "Registration already exists",
+        message:
+          "Registration already exists",
+      });
+    }
+
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
       });
     }
 
@@ -239,16 +446,20 @@ const getRegistration = async (req, res) => {
     if (!registrationId) {
       return res.status(400).json({
         success: false,
-        message: "Registration ID is required",
+        message:
+          "Registration ID is required",
       });
     }
 
     const normalizedRegistrationId =
-      registrationId.trim().toUpperCase();
+      registrationId
+        .trim()
+        .toUpperCase();
 
     const registration =
       await Registration.findOne({
-        registrationId: normalizedRegistrationId,
+        registrationId:
+          normalizedRegistrationId,
       })
         .populate(
           "eventId",
@@ -269,12 +480,14 @@ const getRegistration = async (req, res) => {
             "registrationType",
             "minTeamSize",
             "maxTeamSize",
+            "registrationFields",
           ].join(" ")
         )
         .populate({
           path: "participantIds",
+
           select:
-            "registrationId name collegeId email phone department year attendanceStatus checkedInAt +qrToken",
+            "registrationId name collegeId email phone department year customFields attendanceStatus checkedInAt +qrToken",
         })
         .populate(
           "teamId",
@@ -295,6 +508,7 @@ const getRegistration = async (req, res) => {
      * but is temporarily selected here so we can
      * regenerate the QR image.
      */
+
     const participants =
       await Promise.all(
         registration.participantIds.map(
@@ -309,12 +523,14 @@ const getRegistration = async (req, res) => {
             }
 
             return {
-              _id: participant._id,
+              _id:
+                participant._id,
 
               registrationId:
                 participant.registrationId,
 
-              name: participant.name,
+              name:
+                participant.name,
 
               collegeId:
                 participant.collegeId,
@@ -330,6 +546,9 @@ const getRegistration = async (req, res) => {
 
               year:
                 participant.year,
+
+              customFields:
+                participant.customFields || {},
 
               attendanceStatus:
                 participant.attendanceStatus,
@@ -412,22 +631,22 @@ const getRegistrations = async (req, res) => {
 
     const registrationQuery = {};
 
-    // SUPER_ADMIN sees all events.
-    // Other roles only see assigned events.
     if (accessibleEventIds !== null) {
       registrationQuery.eventId = {
         $in: accessibleEventIds,
       };
     }
 
-    // Optional event filter.
     if (eventId) {
       if (accessibleEventIds === null) {
         registrationQuery.eventId = eventId;
       } else {
-        const hasAccess = accessibleEventIds.some(
-          (id) => id.toString() === eventId.toString()
-        );
+        const hasAccess =
+          accessibleEventIds.some(
+            (id) =>
+              id.toString() ===
+              eventId.toString()
+          );
 
         if (!hasAccess) {
           return res.status(403).json({
@@ -437,16 +656,19 @@ const getRegistrations = async (req, res) => {
           });
         }
 
-        registrationQuery.eventId = eventId;
+        registrationQuery.eventId =
+          eventId;
       }
     }
 
     if (paymentStatus) {
-      registrationQuery.paymentStatus = paymentStatus;
+      registrationQuery.paymentStatus =
+        paymentStatus;
     }
 
     if (registrationType) {
-      registrationQuery.registrationType = registrationType;
+      registrationQuery.registrationType =
+        registrationType;
     }
 
     if (status) {
@@ -457,80 +679,81 @@ const getRegistrations = async (req, res) => {
     // FETCH DATA
     // -------------------------------------------------
 
-    let registrations = await Registration.find(
-      registrationQuery
-    )
-      .populate(
-        "eventId",
-        "title slug category date venue fee imageUrl capacity status registrationCount"
+    let registrations =
+      await Registration.find(
+        registrationQuery
       )
-      .populate(
-        "participantIds",
-        "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
-      )
-      .populate(
-        "teamId",
-        "teamId name leaderId status"
-      )
-      .sort({ createdAt: -1 })
-      .lean();
+        .populate(
+          "eventId",
+          "title slug category date venue fee imageUrl capacity status registrationCount"
+        )
+        .populate(
+          "participantIds",
+          "registrationId name collegeId email phone department year customFields attendanceStatus checkedInAt"
+        )
+        .populate(
+          "teamId",
+          "teamId name leaderId status"
+        )
+        .sort({ createdAt: -1 })
+        .lean();
 
     // -------------------------------------------------
     // SEARCH
     // -------------------------------------------------
 
     if (search && search.trim()) {
-      const searchText = search
-        .trim()
-        .toLowerCase();
+      const searchText =
+        search.trim().toLowerCase();
 
-      registrations = registrations.filter(
-        (registration) => {
-          const registrationMatch =
-            registration.registrationId
-              ?.toLowerCase()
-              .includes(searchText);
+      registrations =
+        registrations.filter(
+          (registration) => {
+            const registrationMatch =
+              registration.registrationId
+                ?.toLowerCase()
+                .includes(searchText);
 
-          const eventMatch =
-            registration.eventId?.title
-              ?.toLowerCase()
-              .includes(searchText);
+            const eventMatch =
+              registration.eventId?.title
+                ?.toLowerCase()
+                .includes(searchText);
 
-          const participantMatch =
-            registration.participantIds?.some(
-              (participant) => {
-                return [
-                  participant.name,
-                  participant.collegeId,
-                  participant.email,
-                  participant.phone,
-                  participant.department,
-                ]
-                  .filter(Boolean)
-                  .some((value) =>
-                    String(value)
-                      .toLowerCase()
-                      .includes(searchText)
-                  );
-              }
+            const participantMatch =
+              registration.participantIds?.some(
+                (participant) => {
+                  return [
+                    participant.name,
+                    participant.collegeId,
+                    participant.email,
+                    participant.phone,
+                    participant.department,
+                  ]
+                    .filter(Boolean)
+                    .some((value) =>
+                      String(value)
+                        .toLowerCase()
+                        .includes(searchText)
+                    );
+                }
+              );
+
+            const teamMatch =
+              registration.teamId?.teamId
+                ?.toLowerCase()
+                .includes(searchText) ||
+              registration.teamId?.name
+                ?.toLowerCase()
+                .includes(searchText);
+
+            return (
+              registrationMatch ||
+              eventMatch ||
+              participantMatch ||
+              teamMatch
             );
-
-          const teamMatch =
-            registration.teamId?.teamId
-              ?.toLowerCase()
-              .includes(searchText) ||
-            registration.teamId?.name
-              ?.toLowerCase()
-              .includes(searchText);
-
-          return (
-            registrationMatch ||
-            eventMatch ||
-            participantMatch ||
-            teamMatch
-          );
-        }
-      );
+          }
+        );
     }
 
     // -------------------------------------------------
@@ -538,21 +761,23 @@ const getRegistrations = async (req, res) => {
     // -------------------------------------------------
 
     if (attendanceStatus) {
-      registrations = registrations.filter(
-        (registration) =>
-          registration.participantIds?.some(
-            (participant) =>
-              participant.attendanceStatus ===
-              attendanceStatus
-          )
-      );
+      registrations =
+        registrations.filter(
+          (registration) =>
+            registration.participantIds?.some(
+              (participant) =>
+                participant.attendanceStatus ===
+                attendanceStatus
+            )
+        );
     }
 
     // -------------------------------------------------
-    // TOTAL AFTER ALL FILTERS
+    // TOTAL
     // -------------------------------------------------
 
-    const total = registrations.length;
+    const total =
+      registrations.length;
 
     // -------------------------------------------------
     // PAGINATION
@@ -564,14 +789,19 @@ const getRegistrations = async (req, res) => {
     );
 
     const limitNumber = Math.min(
-      Math.max(Number(limit) || 20, 1),
+      Math.max(
+        Number(limit) || 20,
+        1
+      ),
       100
     );
 
     const totalPages =
       total === 0
         ? 1
-        : Math.ceil(total / limitNumber);
+        : Math.ceil(
+            total / limitNumber
+          );
 
     const safePage = Math.min(
       pageNumber,
@@ -579,7 +809,8 @@ const getRegistrations = async (req, res) => {
     );
 
     const skip =
-      (safePage - 1) * limitNumber;
+      (safePage - 1) *
+      limitNumber;
 
     const paginatedRegistrations =
       registrations.slice(
@@ -588,21 +819,24 @@ const getRegistrations = async (req, res) => {
       );
 
     // -------------------------------------------------
-    // NORMALIZE RESPONSE FOR FRONTEND
+    // NORMALIZE RESPONSE
     // -------------------------------------------------
 
     const normalizedRegistrations =
       paginatedRegistrations.map(
         (registration) => {
           const firstParticipant =
-            registration.participantIds?.[0] ||
+            registration
+              .participantIds?.[0] ||
             null;
 
           const team =
-            registration.teamId || null;
+            registration.teamId ||
+            null;
 
           return {
-            _id: registration._id,
+            _id:
+              registration._id,
 
             registrationId:
               registration.registrationId,
@@ -620,20 +854,29 @@ const getRegistrations = async (req, res) => {
               registration.createdAt,
 
             event:
-              registration.eventId || null,
+              registration.eventId ||
+              null,
 
             participants:
-              registration.participantIds || [],
+              registration.participantIds ||
+              [],
 
             participant:
               firstParticipant,
 
             team: team
               ? {
-                  teamId: team.teamId,
-                  teamName: team.name,
-                  leaderId: team.leaderId,
-                  status: team.status,
+                  teamId:
+                    team.teamId,
+
+                  teamName:
+                    team.name,
+
+                  leaderId:
+                    team.leaderId,
+
+                  status:
+                    team.status,
                 }
               : null,
           };
@@ -657,8 +900,10 @@ const getRegistrations = async (req, res) => {
         limit: limitNumber,
         total,
         totalPages,
+
         hasNextPage:
           safePage < totalPages,
+
         hasPreviousPage:
           safePage > 1,
       },
@@ -673,7 +918,9 @@ const getRegistrations = async (req, res) => {
     );
 
     if (error.statusCode) {
-      return res.status(error.statusCode).json({
+      return res.status(
+        error.statusCode
+      ).json({
         success: false,
         message: error.message,
       });
@@ -691,14 +938,18 @@ const getRegistrations = async (req, res) => {
 // GET /api/admin/registrations/:id
 // =====================================================
 
-const getRegistrationById = async (req, res) => {
+const getRegistrationById = async (
+  req,
+  res
+) => {
   try {
     const { id } = req.params;
 
     if (!id || !id.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Registration ID is required",
+        message:
+          "Registration ID is required",
       });
     }
 
@@ -711,7 +962,7 @@ const getRegistrationById = async (req, res) => {
       })
         .populate(
           "eventId",
-          "title slug category description imageUrl date startTime endTime venue fee registrationStart registrationEnd capacity status registrationCount"
+          "title slug category description imageUrl date startTime endTime venue fee registrationStart registrationEnd capacity status registrationCount registrationFields"
         )
         .populate(
           "participantIds",
@@ -763,17 +1014,20 @@ const getRegistrationById = async (req, res) => {
     // -------------------------------------------------
 
     const firstParticipant =
-      registration.participantIds?.[0] ||
+      registration
+        .participantIds?.[0] ||
       null;
 
     const team =
-      registration.teamId || null;
+      registration.teamId ||
+      null;
 
     return res.status(200).json({
       success: true,
 
       registration: {
-        _id: registration._id,
+        _id:
+          registration._id,
 
         registrationId:
           registration.registrationId,
@@ -794,17 +1048,25 @@ const getRegistrationById = async (req, res) => {
           registration.eventId,
 
         participants:
-          registration.participantIds || [],
+          registration.participantIds ||
+          [],
 
         participant:
           firstParticipant,
 
         team: team
           ? {
-              teamId: team.teamId,
-              teamName: team.name,
-              leaderId: team.leaderId,
-              status: team.status,
+              teamId:
+                team.teamId,
+
+              teamName:
+                team.name,
+
+              leaderId:
+                team.leaderId,
+
+              status:
+                team.status,
             }
           : null,
       },
@@ -816,7 +1078,9 @@ const getRegistrationById = async (req, res) => {
     );
 
     if (error.statusCode) {
-      return res.status(error.statusCode).json({
+      return res.status(
+        error.statusCode
+      ).json({
         success: false,
         message: error.message,
       });
@@ -834,7 +1098,10 @@ const getRegistrationById = async (req, res) => {
 // GET /api/admin/registrations/export
 // =====================================================
 
-const exportRegistrations = async (req, res) => {
+const exportRegistrations = async (
+  req,
+  res
+) => {
   try {
     const {
       eventId,
@@ -882,7 +1149,8 @@ const exportRegistrations = async (req, res) => {
     }
 
     if (paymentStatus) {
-      query.paymentStatus = paymentStatus;
+      query.paymentStatus =
+        paymentStatus;
     }
 
     let registrations =
@@ -893,7 +1161,7 @@ const exportRegistrations = async (req, res) => {
         )
         .populate(
           "participantIds",
-          "registrationId name collegeId email phone department year attendanceStatus checkedInAt"
+          "registrationId name collegeId email phone department year customFields attendanceStatus checkedInAt"
         )
         .populate(
           "teamId",
@@ -986,14 +1254,18 @@ const exportRegistrations = async (req, res) => {
         createdAt: -1,
       });
 
-    const paymentsMap = new Map();
+    const paymentsMap =
+      new Map();
 
     for (const payment of payments) {
       const key =
         payment.registrationId.toString();
 
       if (!paymentsMap.has(key)) {
-        paymentsMap.set(key, payment);
+        paymentsMap.set(
+          key,
+          payment
+        );
       }
     }
 
@@ -1025,7 +1297,9 @@ const exportRegistrations = async (req, res) => {
     );
 
     if (error.statusCode) {
-      return res.status(error.statusCode).json({
+      return res.status(
+        error.statusCode
+      ).json({
         success: false,
         message: error.message,
       });
