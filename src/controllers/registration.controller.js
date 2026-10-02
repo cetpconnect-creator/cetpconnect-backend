@@ -1125,8 +1125,14 @@ const exportRegistrations = async (
       };
     }
 
+    // -------------------------------------------------
+    // EVENT FILTER
+    // -------------------------------------------------
+
     if (eventId) {
-      if (accessibleEventIds === null) {
+      if (
+        accessibleEventIds === null
+      ) {
         query.eventId = eventId;
       } else {
         const hasAccess =
@@ -1148,34 +1154,76 @@ const exportRegistrations = async (
       }
     }
 
+    // -------------------------------------------------
+    // PAYMENT FILTER
+    // -------------------------------------------------
+
     if (paymentStatus) {
       query.paymentStatus =
         paymentStatus;
     }
 
+    // -------------------------------------------------
+    // LOAD REGISTRATIONS
+    // -------------------------------------------------
+
     let registrations =
       await Registration.find(query)
         .populate(
           "eventId",
-          "title slug category fee"
+          [
+            "title",
+            "slug",
+            "category",
+            "fee",
+            "date",
+            "startTime",
+            "endTime",
+            "venue",
+            "registrationFields",
+          ].join(" ")
         )
         .populate(
           "participantIds",
-          "registrationId name collegeId email phone department year customFields attendanceStatus checkedInAt"
+          [
+            "registrationId",
+            "name",
+            "collegeId",
+            "email",
+            "phone",
+            "department",
+            "year",
+            "customFields",
+            "attendanceStatus",
+            "checkedInAt",
+          ].join(" ")
         )
-        .populate(
-          "teamId",
-          "teamId name leaderId status"
-        )
-        .sort({ createdAt: -1 });
+        .populate({
+          path: "teamId",
+          select:
+            "teamId name leaderId status eventId",
+          populate: {
+            path: "leaderId",
+            select:
+              "registrationId name collegeId email phone department year",
+          },
+        })
+        .sort({
+          createdAt: -1,
+        });
 
     // -------------------------------------------------
     // SEARCH
     // -------------------------------------------------
 
-    if (search && search.trim()) {
+    if (
+      search &&
+      search.trim()
+    ) {
       const searchText =
-        search.trim().toLowerCase();
+        search
+          .trim()
+          .toLowerCase();
 
       registrations =
         registrations.filter(
@@ -1198,7 +1246,9 @@ const exportRegistrations = async (
                     .some((value) =>
                       String(value)
                         .toLowerCase()
-                        .includes(searchText)
+                        .includes(
+                          searchText
+                        )
                     )
               );
 
@@ -1236,7 +1286,7 @@ const exportRegistrations = async (
     }
 
     // -------------------------------------------------
-    // PAYMENTS
+    // GET PAYMENTS
     // -------------------------------------------------
 
     const registrationIds =
@@ -1245,27 +1295,97 @@ const exportRegistrations = async (
           registration._id
       );
 
-    const payments =
-      await Payment.find({
-        registrationId: {
-          $in: registrationIds,
+    const teamObjectIds =
+      registrations
+        .map(
+          (registration) =>
+            registration.teamId?._id
+        )
+        .filter(Boolean);
+
+    /*
+     * Get both:
+     *
+     * 1. Payments linked to registration
+     * 2. Payments linked directly to team
+     *
+     * This is important because your payment
+     * model supports both registrationId and teamId.
+     */
+
+    const paymentQuery = {
+      $or: [
+        {
+          registrationId: {
+            $in: registrationIds,
+          },
         },
-      }).sort({
-        createdAt: -1,
-      });
+        {
+          teamId: {
+            $in: teamObjectIds,
+          },
+        },
+      ],
+    };
+
+    const payments =
+      registrationIds.length ||
+      teamObjectIds.length
+        ? await Payment.find(
+            paymentQuery
+          ).sort({
+            createdAt: -1,
+          })
+        : [];
+
+    // -------------------------------------------------
+    // PAYMENT MAP
+    // -------------------------------------------------
 
     const paymentsMap =
       new Map();
 
     for (const payment of payments) {
-      const key =
-        payment.registrationId.toString();
+      /*
+       * Registration payment
+       */
 
-      if (!paymentsMap.has(key)) {
-        paymentsMap.set(
-          key,
-          payment
-        );
+      if (
+        payment.registrationId
+      ) {
+        const registrationKey =
+          payment.registrationId.toString();
+
+        if (
+          !paymentsMap.has(
+            registrationKey
+          )
+        ) {
+          paymentsMap.set(
+            registrationKey,
+            payment
+          );
+        }
+      }
+
+      /*
+       * Team payment
+       */
+
+      if (payment.teamId) {
+        const teamKey =
+          `TEAM:${payment.teamId.toString()}`;
+
+        if (
+          !paymentsMap.has(
+            teamKey
+          )
+        ) {
+          paymentsMap.set(
+            teamKey,
+            payment
+          );
+        }
       }
     }
 
@@ -1278,6 +1398,10 @@ const exportRegistrations = async (
         registrations,
         paymentsMap
       );
+
+    // -------------------------------------------------
+    // RESPONSE
+    // -------------------------------------------------
 
     res.setHeader(
       "Content-Type",
@@ -1301,7 +1425,8 @@ const exportRegistrations = async (
         error.statusCode
       ).json({
         success: false,
-        message: error.message,
+        message:
+          error.message,
       });
     }
 
