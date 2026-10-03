@@ -3,6 +3,12 @@
 const Event = require("../models/Event");
 const User = require("../models/User");
 
+const {
+  getCache,
+  setCache,
+  deleteCache,
+} = require("../services/redis.service");
+
 // =====================================================
 // ACCESS CONTROL
 // =====================================================
@@ -375,6 +381,8 @@ const createEvent = async (
           req.user.userId,
       });
 
+    await deleteCache("cetpconnect:events:published");
+
     return res.status(201).json({
       success: true,
       message:
@@ -530,6 +538,7 @@ const updateEvent = async (
     const event =
       await Event.findById(id);
 
+
     if (!event) {
       return res.status(404).json({
         success: false,
@@ -537,6 +546,8 @@ const updateEvent = async (
           "Event not found.",
       });
     }
+
+    const oldSlug = event.slug;
 
     await checkEventAccess(
       req,
@@ -766,6 +777,18 @@ const updateEvent = async (
 
     await event.save();
 
+    await deleteCache(
+      "cetpconnect:events:published"
+    );
+
+    await deleteCache(
+      `cetpconnect:event:slug:${oldSlug}`
+    );
+
+    await deleteCache(
+      `cetpconnect:event:slug:${event.slug}`
+    );
+
     return res.status(200).json({
       success: true,
       message:
@@ -821,7 +844,17 @@ const deleteEvent = async (
       });
     }
 
+    const oldSlug = event.slug;
+
     await event.deleteOne();
+
+    await deleteCache(
+      "cetpconnect:events:published"
+    );
+
+    await deleteCache(
+      `cetpconnect:event:slug:${oldSlug}`
+    );
 
     return res.status(200).json({
       success: true,
@@ -847,51 +880,84 @@ const deleteEvent = async (
 // PUBLIC EVENTS
 // =====================================================
 
-const getPublishedEvents = async (
-  req,
-  res
-) => {
-  try {
-    const events =
-      await Event.find({
-        status: "PUBLISHED",
-      })
-        .select(
-          [
-            "title",
-            "slug",
-            "category",
-            "description",
-            "imageUrl",
-            "rules",
-            "date",
-            "startTime",
-            "endTime",
-            "venue",
-            "registrationStart",
-            "registrationEnd",
-            "fee",
-            "capacity",
-            "prizeMoney",
-            "registrationType",
-            "minTeamSize",
-            "maxTeamSize",
-            "paymentQrUrl",
-            "registrationFields",
-            "status",
-            "createdAt",
-          ].join(" ")
-        )
-        .sort({
-          date: 1,
-        })
-        .lean();
+const getPublishedEvents = async (req, res) => {
+  const CACHE_KEY = "cetpconnect:events:published";
+  const CACHE_TTL = 60 * 60 * 24; // 24 hours
 
-    return res.status(200).json({
+  try {
+    // ==========================================
+    // 1. TRY REDIS CACHE
+    // ==========================================
+
+    const cachedEvents = await getCache(CACHE_KEY);
+
+    if (cachedEvents) {
+      console.log("⚡ /api/events → Redis HIT");
+
+      return res.status(200).json(cachedEvents);
+    }
+
+    console.log("🐢 /api/events → Redis MISS");
+
+    // ==========================================
+    // 2. REDIS MISS → GET FROM MONGODB
+    // ==========================================
+
+    const events = await Event.find({
+      status: "PUBLISHED",
+    })
+      .select(
+        [
+          "title",
+          "slug",
+          "category",
+          "description",
+          "imageUrl",
+          "rules",
+          "date",
+          "startTime",
+          "endTime",
+          "venue",
+          "registrationStart",
+          "registrationEnd",
+          "fee",
+          "capacity",
+          "prizeMoney",
+          "registrationType",
+          "minTeamSize",
+          "maxTeamSize",
+          "paymentQrUrl",
+          "registrationFields",
+          "status",
+          "createdAt",
+        ].join(" ")
+      )
+      .sort({
+        date: 1,
+      })
+      .lean();
+
+    const response = {
       success: true,
       count: events.length,
       events,
-    });
+    };
+
+    // ==========================================
+    // 3. STORE RESULT IN REDIS
+    // ==========================================
+
+    await setCache(
+      CACHE_KEY,
+      response,
+      CACHE_TTL
+    );
+
+    // ==========================================
+    // 4. RETURN RESPONSE
+    // ==========================================
+
+    return res.status(200).json(response);
   } catch (error) {
     console.error(
       "GET PUBLISHED EVENTS ERROR:",
@@ -900,8 +966,7 @@ const getPublishedEvents = async (
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to load published events.",
+      message: "Unable to load published events.",
     });
   }
 };
@@ -910,31 +975,69 @@ const getPublishedEvents = async (
 // PUBLIC EVENT BY SLUG
 // =====================================================
 
-const getEventBySlug = async (
-  req,
-  res
-) => {
-  try {
-    const { slug } = req.params;
+const getEventBySlug = async (req, res) => {
+  const slug = String(req.params.slug || "")
+    .trim()
+    .toLowerCase();
 
-    const event =
-      await Event.findOne({
-        slug,
-        status: "PUBLISHED",
-      }).lean();
+  const CACHE_KEY = `cetpconnect:event:slug:${slug}`;
+  const CACHE_TTL = 60 * 60 * 24; // 24 hours
+
+  try {
+    // ==========================================
+    // 1. TRY REDIS
+    // ==========================================
+
+    const cachedEvent = await getCache(CACHE_KEY);
+
+    if (cachedEvent) {
+      console.log(
+        `⚡ /api/events/${slug} → Redis HIT`
+      );
+
+      return res.status(200).json(cachedEvent);
+    }
+
+    console.log(
+      `🐢 /api/events/${slug} → Redis MISS`
+    );
+
+    // ==========================================
+    // 2. GET FROM MONGODB
+    // ==========================================
+
+    const event = await Event.findOne({
+      slug,
+      status: "PUBLISHED",
+    }).lean();
 
     if (!event) {
       return res.status(404).json({
         success: false,
-        message:
-          "Event not found.",
+        message: "Event not found.",
       });
     }
 
-    return res.status(200).json({
+    const response = {
       success: true,
       event,
-    });
+    };
+
+    // ==========================================
+    // 3. STORE IN REDIS
+    // ==========================================
+
+    await setCache(
+      CACHE_KEY,
+      response,
+      CACHE_TTL
+    );
+
+    // ==========================================
+    // 4. RETURN
+    // ==========================================
+
+    return res.status(200).json(response);
   } catch (error) {
     console.error(
       "GET EVENT BY SLUG ERROR:",
@@ -943,8 +1046,7 @@ const getEventBySlug = async (
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to load event.",
+      message: "Unable to load event.",
     });
   }
 };
